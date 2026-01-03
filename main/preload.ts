@@ -19,5 +19,8 @@ const handler = {
 }
 
 contextBridge.exposeInMainWorld('ipc', handler)
+contextBridge.exposeInMainWorld('electronAPI', {
+  generateAiName: (filePath: string) => ipcRenderer.invoke('ask-ai-rename', filePath),
+})
 
 export type IpcHandler = typeof handler

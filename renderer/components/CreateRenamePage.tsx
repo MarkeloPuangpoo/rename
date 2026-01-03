@@ -2,10 +2,11 @@ import React, { useState, useEffect } from 'react';
 
 // Types
 interface FileItem {
-    id: string;
+    id: string; // Use path as ID
     original: string;
     new: string;
-    status: 'pending' | 'success' | 'error';
+    path: string; // Added path field
+    status: 'idle' | 'processing' | 'done' | 'error' | 'success'; // Extended status
     error?: string;
 }
 
@@ -17,20 +18,18 @@ export default function CreateRenamePage() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [progress, setProgress] = useState(0);
 
-    // Effect to update new filenames based on mode
+    // Effect to update new filenames based on mode (Non-AI modes)
     useEffect(() => {
+        if (renameMode === 'Smart Rename') return; // Skip for Smart Rename (AI handles it)
+
         const updatedFiles = files.map((file, index) => {
-            // Skip if already successfully renamed
-            if (file.status === 'success') return file;
+            if (file.status === 'success' || file.status === 'done' || file.status === 'processing') return file;
 
             let newName = file.new;
             const ext = file.original.split('.').pop();
             const baseName = file.original.split('/').pop()?.split('.').slice(0, -1).join('.');
 
-            if (renameMode === 'Smart Rename') {
-                // Simple counter for now: File_01.ext
-                newName = `File_${String(index + 1).padStart(2, '0')}.${ext}`;
-            } else if (renameMode === 'Add Prefix') {
+            if (renameMode === 'Add Prefix') {
                 newName = `${pattern}${baseName}.${ext}`;
             } else if (renameMode === 'Add Suffix') {
                 newName = `${baseName}${pattern}.${ext}`;
@@ -39,7 +38,7 @@ export default function CreateRenamePage() {
             return { ...file, new: newName };
         });
 
-        // Only update if changes to avoid infinite loop (JSON stringify comparison is quick hack)
+        // Only update if changes to avoid infinite loop
         if (JSON.stringify(updatedFiles) !== JSON.stringify(files)) {
             setFiles(updatedFiles);
         }
@@ -56,11 +55,11 @@ export default function CreateRenamePage() {
                         id: path, // Use path as ID for simplicity
                         original: path, // Full path needed for renaming
                         new: fileName, // Default to current name (will be updated by effect)
-                        status: 'pending',
+                        path: path,
+                        status: 'idle',
                     };
                 });
 
-                // Append new files, avoiding duplicates
                 setFiles(prev => {
                     const existingIds = new Set(prev.map(f => f.id));
                     const uniqueNewFiles = newFiles.filter(f => !existingIds.has(f.id));
@@ -72,33 +71,64 @@ export default function CreateRenamePage() {
         }
     };
 
-    const handleRename = async () => {
+    const handleSmartRename = async () => {
+        setIsProcessing(true);
+        setProgress(0);
+
+        // Filter files that need processing
+        const filesToProcess = files.filter(f => f.status !== 'success');
+        const total = filesToProcess.length;
+        let completed = 0;
+
+        for (const file of filesToProcess) {
+            // Update status to processing
+            setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'processing' } : f));
+
+            try {
+                const result = await window.electronAPI.generateAiName(file.path);
+                if (result.success && result.newName) {
+                    // Append original extension
+                    const ext = file.original.split('.').pop();
+                    const finalName = `${result.newName}.${ext}`;
+
+                    setFiles(prev => prev.map(f => f.id === file.id ? { ...f, new: finalName, status: 'done' } : f));
+                } else {
+                    setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error', error: result.error || 'Unknown error' } : f));
+                }
+            } catch (error) {
+                setFiles(prev => prev.map(f => f.id === file.id ? { ...f, status: 'error', error: String(error) } : f));
+            }
+
+            completed++;
+            setProgress(Math.round((completed / total) * 100));
+        }
+
+        setIsProcessing(false);
+    };
+
+    const handleApplyRename = async () => {
         if (files.length === 0) return;
 
         setIsProcessing(true);
-        setProgress(10); // Start progress
+        setProgress(10);
 
-        const filesToRename = files.filter(f => f.status !== 'success').map(f => ({
+        // Only rename files that have a new name ready (idle or done) and aren't already success/error
+        const filesToRename = files.filter(f => f.status !== 'success' && f.status !== 'error').map(f => ({
             original: f.original,
             new: f.new
         }));
 
         try {
-            // Simulate progress for UI feel
-            setProgress(50);
             const results = await window.ipc.invoke('rename-files', filesToRename);
             setProgress(100);
 
-            // Update file statuses based on result
             setFiles(prev => prev.map(f => {
                 const result = results.find((r: any) => r.original === f.original);
                 if (result) {
                     return {
                         ...f,
-                        status: result.status,
-                        // If success, update original to new path so we can rename again if needed? 
-                        // For now, let's keep it simple. If success, it's done. 
-                        // Actually, if we rename, the file at 'original' no longer exists.
+                        status: result.status === 'success' ? 'success' : 'error',
+                        error: result.error
                     };
                 }
                 return f;
@@ -113,6 +143,14 @@ export default function CreateRenamePage() {
             }, 1000);
         }
     };
+
+    const onMainButtonClick = () => {
+        if (renameMode === 'Smart Rename') {
+            handleSmartRename();
+        } else {
+            handleApplyRename();
+        }
+    }
 
     const renderContent = () => {
         if (activeTab === 'History') {
@@ -178,9 +216,79 @@ export default function CreateRenamePage() {
                                     </div>
                                 </td>
                                 <td className="px-6 py-3 text-center">
-                                    <svg className="w-4 h-4 text-slate-400 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                                    </svg>
+                                    {file.status === 'success' ? (
+                                        <svg className="w-5 h-5 text-green-500 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                        </svg>
+                                    ) : file.status === 'error' ? (
+                                        <div className="group relative">
+                                            <svg className="w-5 h-5 text-red-500 mx-auto cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                            </svg>
+                                            {file.error && (
+                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50 pointer-events-none">
+                                                    {file.error}
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : file.status === 'done' ? (
+                                        <svg className="w-5 h-5 text-blue-500 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                    ) : file.status === 'processing' ? (
+                                        <svg className="w-5 h-5 text-blue-500 animate-spin mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                    ) : (
+                                        <svg className="w-5 h-5 text-slate-300 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                    )}
+                                </td>
+                                <td className="px-6 py-3">
+                                    <span className="text-sm font-semibold text-slate-800 truncate max-w-[200px]" title={file.new}>
+                                        {file.new}
+                                    </span>
+                                </td>
+                                <td className="px-6 py-3 text-center">
+                                    {/* Reusing status icon column for general status, duplicate of 3rd col? 
+                        Wait, layout had 5 columns. 
+                        Col 1: Checkbox
+                        Col 2: Original
+                        Col 3: Arrow/Status (Middle) -> Logic above put unique icons here.
+                        Col 4: New Filename
+                        Col 5: Status (Far right) -> Wait, layout had arrow in middle and status at end.
+                        Let's check the previous code logic.
+                        
+                        Previous code:
+                        Col 3: Arrow icon.
+                        Col 5: Status icon (check/clock).
+                        
+                        My new code put the status logic in Col 3 (Middle)? 
+                        Let me fix this.
+                        Col 3 should be Arrow (or spinner if processing?)
+                        Col 5 should be Result Status?
+                        
+                        User Request: "When processing, show a spinning loader icon (SVG) instead of the arrow/status icon. When done, show a green checkmark."
+                        
+                        The arrow is in the middle. The status is at the far right.
+                        If I replace the arrow with spinner, that's fine.
+                        
+                        Let's revert:
+                        Col 3: Arrow (default). Spinner (processing).
+                        Col 5: Status (Success/Error/Pending).
+                    */}
+                                    {file.status === 'processing' ? (
+                                        <svg className="w-5 h-5 text-blue-500 animate-spin mx-auto" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                    ) : (
+                                        <svg className="w-4 h-4 text-slate-400 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                                        </svg>
+                                    )}
                                 </td>
                                 <td className="px-6 py-3">
                                     <span className="text-sm font-semibold text-slate-800 truncate max-w-[200px]" title={file.new}>
@@ -193,8 +301,19 @@ export default function CreateRenamePage() {
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                                         </svg>
                                     ) : file.status === 'error' ? (
-                                        <svg className="w-5 h-5 text-red-500 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                        <div className="group relative">
+                                            <svg className="w-5 h-5 text-red-500 mx-auto cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                            </svg>
+                                            {file.error && (
+                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 text-white text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50 pointer-events-none">
+                                                    {file.error}
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : file.status === 'done' ? (
+                                        <svg className="w-5 h-5 text-blue-500 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                                         </svg>
                                     ) : (
                                         <svg className="w-5 h-5 text-slate-300 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -312,7 +431,7 @@ export default function CreateRenamePage() {
                                         type="text"
                                         value={pattern}
                                         onChange={(e) => setPattern(e.target.value)}
-                                        placeholder={renameMode === 'Smart Rename' ? "Auto-generated..." : "Enter text..."}
+                                        placeholder={renameMode === 'Smart Rename' ? "Auto-generated by AI..." : "Enter text..."}
                                         disabled={renameMode === 'Smart Rename'}
                                         className="block w-full pl-3 pr-3 py-2 border border-slate-300 rounded-md leading-5 bg-white placeholder-slate-400 focus:outline-none focus:placeholder-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 sm:text-sm disabled:bg-slate-100 disabled:text-slate-500"
                                     />
@@ -337,11 +456,11 @@ export default function CreateRenamePage() {
                                 </div>
 
                                 <button
-                                    onClick={handleRename}
+                                    onClick={onMainButtonClick}
                                     disabled={files.length === 0 || isProcessing}
                                     className="flex-shrink-0 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium py-2 px-8 rounded-md shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 text-sm"
                                 >
-                                    {isProcessing ? 'Renaming...' : `Rename ${files.length} Files`}
+                                    {isProcessing ? 'Processing... ' : renameMode === 'Smart Rename' ? 'Generate Names' : `Rename ${files.length} Files`}
                                 </button>
                             </div>
 

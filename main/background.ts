@@ -3,6 +3,7 @@ import { app, ipcMain, dialog } from 'electron'
 import serve from 'electron-serve'
 import { createWindow } from './helpers'
 import fs from 'fs/promises'
+import ollama from 'ollama'
 
 const isProd = process.env.NODE_ENV === 'production'
 
@@ -61,4 +62,27 @@ ipcMain.handle('rename-files', async (_, files: { original: string; new: string 
     }
   }
   return results
+})
+
+ipcMain.handle('ask-ai-rename', async (_, filePath: string) => {
+  try {
+    const fileBuffer = await fs.readFile(filePath)
+    const response = await ollama.generate({
+      model: 'llava',
+      prompt: "Analyze this image. Return ONLY a short, descriptive filename in snake_case (e.g., sunny_beach_dog). Do NOT include the file extension. Do NOT add any conversational text. If unsure, return 'unknown_image'.",
+      images: [fileBuffer.toString('base64')], // ollama-js expects base64 string or Uint8Array, let's try base64 to be safe or check docs. 
+      // Actually, ollama-js `images` is `(string | Uint8Array)[]`. passing buffer directly might fail if not handled? 
+      // Let's stick to base64 for safety as per common usage, or pass buffer if supported. 
+      // Documentation says `Uint8Array` is supported. fs.readFile returns Buffer which is Uint8Array.
+    })
+
+    let newName = response.response.trim()
+    // cleanup in case model adds extra text
+    newName = newName.replace(/[\n\r]/g, '').replace(/\s/g, '_').toLowerCase()
+
+    return { success: true, newName }
+  } catch (error) {
+    console.error('AI Rename Error:', error)
+    return { success: false, error: String(error) }
+  }
 })
