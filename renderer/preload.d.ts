@@ -5,6 +5,7 @@ declare global {
     ipc: IpcHandler
     electronAPI: {
       generateAiName: (filePath: string) => Promise<{ success: boolean; newName?: string; error?: string }>
+      checkAiStatus: () => Promise<{ success: boolean; message: string }>
     }
   }
 }

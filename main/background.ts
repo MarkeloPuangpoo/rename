@@ -66,23 +66,62 @@ ipcMain.handle('rename-files', async (_, files: { original: string; new: string 
 
 ipcMain.handle('ask-ai-rename', async (_, filePath: string) => {
   try {
+    console.log(`Processing file: ${filePath}`)
     const fileBuffer = await fs.readFile(filePath)
+
+    // Prompt: No examples, explicit constraint on keywords
+    const prompt = "Describe the main subject of this image using 2 to 4 keywords. Separate keywords with underscores. Return ONLY the keywords. Do not start with 'The image...'."
+
     const response = await ollama.generate({
-      model: 'llava',
-      prompt: "Analyze this image. Return ONLY a short, descriptive filename in snake_case (e.g., sunny_beach_dog). Do NOT include the file extension. Do NOT add any conversational text. If unsure, return 'unknown_image'.",
-      images: [fileBuffer.toString('base64')], // ollama-js expects base64 string or Uint8Array, let's try base64 to be safe or check docs. 
-      // Actually, ollama-js `images` is `(string | Uint8Array)[]`. passing buffer directly might fail if not handled? 
-      // Let's stick to base64 for safety as per common usage, or pass buffer if supported. 
-      // Documentation says `Uint8Array` is supported. fs.readFile returns Buffer which is Uint8Array.
+      model: 'moondream',
+      prompt: prompt,
+      images: [fileBuffer.toString('base64')],
+      stream: false
     })
 
+    console.log('Raw AI Response:', response.response)
+
     let newName = response.response.trim()
-    // cleanup in case model adds extra text
-    newName = newName.replace(/[\n\r]/g, '').replace(/\s/g, '_').toLowerCase()
+
+    // Cleaning
+    newName = newName
+      .replace(/[\n\r]/g, '')
+      .replace(/[^\w\s_-]/g, '')
+      .replace(/\s+/g, '_')
+      .toLowerCase()
+
+    // Fix for short names
+    if (newName.length < 3) {
+      newName = `image_${newName}`;
+    }
+
+    // Truncate if too long (keeping this as safety)
+    if (newName.length > 50) {
+      newName = newName.substring(0, 50);
+    }
+
+    console.log('Final Filename:', newName)
+
+    if (!newName) {
+      throw new Error('AI returned empty response')
+    }
 
     return { success: true, newName }
   } catch (error) {
     console.error('AI Rename Error:', error)
-    return { success: false, error: String(error) }
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('check-ai-status', async () => {
+  try {
+    const list = await ollama.list()
+    const hasModel = list.models.some(m => m.name.includes('moondream'))
+    if (hasModel) {
+      return { success: true, message: 'Connected to Ollama (moondream available)' }
+    }
+    return { success: false, message: 'Ollama connected, but moondream model not found. Run "ollama pull moondream"' }
+  } catch (error) {
+    return { success: false, message: 'Failed to connect to Ollama. Make sure it is running.' }
   }
 })
